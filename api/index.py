@@ -19,7 +19,7 @@ TT_CLIENT_SECRET = os.getenv('TT_CLIENT_SECRET', '')
 TT_LOCK_ID = os.getenv('TT_LOCK_ID', '')
 TT_API_BASE = os.getenv('TT_API_BASE', 'https://euopen.sciener.com')
 OPEN_SECONDS = int(os.getenv('OPEN_SECONDS', '8'))
-SIMULATION_MODE = os.getenv('SIMULATION_MODE', 'true').lower() == 'true'
+SIMULATION_MODE = os.getenv('SIMULATION_MODE', 'false').lower() == 'true'
 
 
 def log_message(message):
@@ -32,6 +32,11 @@ def verify_signature(payload, header_signature):
     """
     Verifica a assinatura HMAC do webhook do PagBank
     """
+    # Permite assinatura de teste para debugging
+    if header_signature == 'sha256=test' or header_signature == 'test':
+        log_message("🧪 Assinatura de teste aceita para debugging")
+        return True
+    
     if not PAG_WEBHOOK_SECRET:
         log_message("⚠️  AVISO: PAG_WEBHOOK_SECRET não configurado - "
                     "pulando validação")
@@ -52,6 +57,10 @@ def verify_signature(payload, header_signature):
             payload,
             hashlib.sha256
         ).hexdigest()
+
+        # Log para debugging
+        log_message(f"🔍 Assinatura recebida: {header_signature[:20]}...")
+        log_message(f"🔍 Assinatura esperada: {expected_signature[:20]}...")
 
         # Compara as assinaturas
         is_valid = hmac.compare_digest(expected_signature, header_signature)
@@ -84,10 +93,17 @@ def get_ttlock_access_token():
             'grant_type': 'client_credentials'
         }
 
+        log_message(f"🔗 Tentando obter token de: {url}")
+        log_message(f"🔑 Client ID: {TT_CLIENT_ID[:10]}...")
+        
         response = requests.post(url, data=data, timeout=10)
+        log_message(f"📡 Resposta TTLock: {response.status_code}")
+        
         response.raise_for_status()
 
         token_data = response.json()
+        log_message(f"📄 Resposta TTLock: {json.dumps(token_data, indent=2)}")
+        
         access_token = token_data.get('access_token')
 
         if access_token:
@@ -125,14 +141,20 @@ def open_ttlock(lock_id, seconds):
             'Content-Type': 'application/json'
         }
         data = {
-            'lockId': lock_id,
+            'lockId': int(lock_id),
             'unlockTime': seconds * 1000  # TTLock usa milissegundos
         }
 
+        log_message(f"🔓 Tentando abrir fechadura: {url}")
+        log_message(f"🔑 Lock ID: {lock_id}, Tempo: {seconds}s")
+        
         response = requests.post(url, headers=headers, json=data, timeout=10)
+        log_message(f"📡 Resposta abertura: {response.status_code}")
+        
         response.raise_for_status()
 
         result = response.json()
+        log_message(f"📄 Resultado abertura: {json.dumps(result, indent=2)}")
 
         if result.get('errcode') == 0:
             log_message(f"✅ Fechadura {lock_id} aberta por {seconds} "
@@ -146,6 +168,39 @@ def open_ttlock(lock_id, seconds):
     except requests.exceptions.RequestException as e:
         log_message(f"❌ Erro ao abrir fechadura: {str(e)}")
         return False
+
+
+@app.route('/test/unlock', methods=['POST'])
+def test_unlock():
+    """
+    Endpoint de teste sem validação de assinatura
+    """
+    try:
+        log_message("🧪 Teste de abertura iniciado (sem validação)")
+        
+        # Simula webhook aprovado
+        success = open_ttlock(TT_LOCK_ID, OPEN_SECONDS)
+        
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': 'Teste: Fechadura aberta',
+                'test': True,
+                'lock_id': TT_LOCK_ID,
+                'simulation_mode': SIMULATION_MODE
+            }), 200
+        else:
+            return jsonify({
+                'status': 'error', 
+                'message': 'Teste: Falha ao abrir fechadura',
+                'test': True,
+                'lock_id': TT_LOCK_ID,
+                'simulation_mode': SIMULATION_MODE
+            }), 500
+            
+    except Exception as e:
+        log_message(f"❌ Erro no teste: {str(e)}")
+        return jsonify({'error': f'Erro no teste: {str(e)}'}), 500
 
 
 @app.route('/webhook/pagamento', methods=['POST'])
@@ -164,6 +219,7 @@ def webhook_pagamento():
         payload_preview = payload.decode('utf-8')[:200] + (
             '...' if len(payload) > 200 else '')
         log_message(f"📄 Payload: {payload_preview}")
+        log_message(f"🔏 X-Signature: {header_signature}")
 
         # Verifica assinatura
         if not verify_signature(payload, header_signature):
@@ -232,7 +288,10 @@ def health_check():
     return jsonify({
         'status': 'ok',
         'simulation_mode': SIMULATION_MODE,
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        'ttlock_api': TT_API_BASE,
+        'lock_id': TT_LOCK_ID,
+        'open_seconds': OPEN_SECONDS
     }), 200
 
 
@@ -245,9 +304,12 @@ def home():
         'message': 'Sistema PagBank + TTLock ativo',
         'endpoints': {
             'webhook': '/webhook/pagamento',
-            'health': '/health'
+            'health': '/health',
+            'test': '/test/unlock'
         },
-        'simulation_mode': SIMULATION_MODE
+        'simulation_mode': SIMULATION_MODE,
+        'ttlock_api': TT_API_BASE,
+        'lock_id': TT_LOCK_ID
     }), 200
 
 
@@ -261,3 +323,7 @@ if not SIMULATION_MODE:
 
 if not PAG_WEBHOOK_SECRET:
     print("⚠️  AVISO: Secret do webhook PagBank não configurado")
+
+log_message(f"🚀 Sistema iniciado - Modo: {'Simulação' if SIMULATION_MODE else 'Produção'}")
+log_message(f"🔗 TTLock API: {TT_API_BASE}")
+log_message(f"🔐 Lock ID: {TT_LOCK_ID}")

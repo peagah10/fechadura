@@ -73,7 +73,7 @@ def get_ttlock_access_token():
     try:
         url = f"{TT_API_BASE}/oauth2/token"
         
-        # CORREÇÃO: Criptografar senha em MD5
+        # Criptografar senha em MD5
         password_md5 = hashlib.md5(TT_PASSWORD.encode('utf-8')).hexdigest()
         
         data = {
@@ -81,11 +81,15 @@ def get_ttlock_access_token():
             'client_secret': TT_CLIENT_SECRET,
             'grant_type': 'password',
             'username': TT_EMAIL,
-            'password': password_md5  # Agora em MD5
+            'password': password_md5
         }
 
         log_message(f"🔑 Tentando autenticar com TTLock...")
         response = requests.post(url, data=data, timeout=10)
+        
+        # Log da resposta para debug
+        log_message(f"📡 Status Code TTLock: {response.status_code}")
+        
         response.raise_for_status()
 
         token_data = response.json()
@@ -107,6 +111,7 @@ def open_ttlock(lock_id, seconds):
     """Abre a fechadura TTLock"""
     if SIMULATION_MODE:
         log_message(f"🔧 [SIMULAÇÃO] Abrindo fechadura {lock_id} por {seconds} segundos...")
+        log_message("🔓 [SIMULAÇÃO] Fechadura aberta com sucesso!")
         return True
 
     try:
@@ -146,10 +151,12 @@ def home():
         'message': 'Sistema PagBank + TTLock funcionando!',
         'status': 'online',
         'simulation_mode': SIMULATION_MODE,
+        'lock_id': TT_LOCK_ID,
         'endpoints': {
             'health': '/health',
             'webhook': '/webhook/pagamento (POST only)',
-            'test': '/test/pagamento (POST only - sem HMAC)'
+            'test': '/test/pagamento (POST only - sem HMAC)',
+            'debug': '/debug/ttlock (GET - debug TTLock)'
         },
         'timestamp': datetime.now().isoformat()
     })
@@ -189,6 +196,7 @@ def webhook_pagamento():
             else:
                 return jsonify({'status': 'error', 'message': 'Falha ao abrir fechadura'}), 500
         else:
+            log_message(f"⏸️ Pagamento não aprovado - Status: {status}")
             return jsonify({'status': 'ignored', 'message': 'Pagamento não aprovado'}), 200
 
     except Exception as e:
@@ -221,10 +229,16 @@ def test_pagamento():
         if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
             log_message("✅ TESTE - Pagamento aprovado - abrindo fechadura")
             if open_ttlock(TT_LOCK_ID, OPEN_SECONDS):
-                return jsonify({'status': 'success', 'message': 'Fechadura aberta (TESTE)'}), 200
+                return jsonify({
+                    'status': 'success', 
+                    'message': 'Fechadura aberta (TESTE)',
+                    'simulation_mode': SIMULATION_MODE,
+                    'lock_id': TT_LOCK_ID
+                }), 200
             else:
                 return jsonify({'status': 'error', 'message': 'Falha ao abrir fechadura (TESTE)'}), 500
         else:
+            log_message(f"⏸️ TESTE - Pagamento não aprovado - Status: {status}")
             return jsonify({'status': 'ignored', 'message': 'Pagamento não aprovado (TESTE)'}), 200
 
     except Exception as e:
@@ -232,16 +246,58 @@ def test_pagamento():
         return jsonify({'error': 'Erro interno'}), 500
 
 
+@app.route('/debug/ttlock', methods=['GET'])
+def debug_ttlock():
+    """Rota para debug da autenticação TTLock"""
+    try:
+        if SIMULATION_MODE:
+            return jsonify({
+                'status': 'simulation_mode',
+                'message': 'Modo simulação ativo - TTLock não será testado',
+                'simulation_mode': True,
+                'lock_id': TT_LOCK_ID
+            })
+        
+        url = f"{TT_API_BASE}/oauth2/token"
+        password_md5 = hashlib.md5(TT_PASSWORD.encode('utf-8')).hexdigest()
+        
+        data = {
+            'client_id': TT_CLIENT_ID,
+            'client_secret': TT_CLIENT_SECRET,
+            'grant_type': 'password',
+            'username': TT_EMAIL,
+            'password': password_md5
+        }
+        
+        response = requests.post(url, data=data, timeout=10)
+        
+        return jsonify({
+            'url': url,
+            'status_code': response.status_code,
+            'response': response.text,
+            'email': TT_EMAIL,
+            'client_id': TT_CLIENT_ID[:8] + '...',  # Parcial por segurança
+            'lock_id': TT_LOCK_ID,
+            'simulation_mode': SIMULATION_MODE
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
         'status': 'ok',
         'simulation_mode': SIMULATION_MODE,
+        'lock_id': TT_LOCK_ID,
         'timestamp': datetime.now().isoformat()
     })
 
 
 if __name__ == '__main__':
     log_message("🚀 Iniciando sistema PagBank + TTLock")
+    log_message(f"🔧 Modo simulação: {'ATIVO' if SIMULATION_MODE else 'DESATIVO'}")
+    log_message(f"🔒 Lock ID: {TT_LOCK_ID}")
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)

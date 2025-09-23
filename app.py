@@ -16,7 +16,7 @@ app = Flask(__name__)
 PAG_WEBHOOK_SECRET = os.getenv('PAG_WEBHOOK_SECRET', '')
 TT_CLIENT_ID = os.getenv('TT_CLIENT_ID', '')
 TT_CLIENT_SECRET = os.getenv('TT_CLIENT_SECRET', '')
-TT_EMAIL = os.getenv('TT_EMAIL', '')  # CORRIGIDO
+TT_EMAIL = os.getenv('TT_EMAIL', '')
 TT_PASSWORD = os.getenv('TT_PASSWORD', '')
 TT_LOCK_ID = os.getenv('TT_LOCK_ID', '')
 TT_API_BASE = os.getenv('TT_API_BASE', 'https://api.ttlock.com')
@@ -76,7 +76,7 @@ def get_ttlock_access_token():
             'client_id': TT_CLIENT_ID,
             'client_secret': TT_CLIENT_SECRET,
             'grant_type': 'password',
-            'username': TT_EMAIL,  # CORRIGIDO
+            'username': TT_EMAIL,
             'password': TT_PASSWORD
         }
 
@@ -142,7 +142,8 @@ def home():
         'simulation_mode': SIMULATION_MODE,
         'endpoints': {
             'health': '/health',
-            'webhook': '/webhook/pagamento (POST only)'
+            'webhook': '/webhook/pagamento (POST only)',
+            'test': '/test/pagamento (POST only - sem HMAC)'
         },
         'timestamp': datetime.now().isoformat()
     })
@@ -150,7 +151,7 @@ def home():
 
 @app.route('/webhook/pagamento', methods=['POST'])
 def webhook_pagamento():
-    """Recebe webhooks do PagBank"""
+    """Recebe webhooks do PagBank (com verificação HMAC)"""
     try:
         log_message("📥 Webhook recebido do PagBank")
         payload = request.get_data()
@@ -187,6 +188,42 @@ def webhook_pagamento():
     except Exception as e:
         log_message(f"❌ Erro interno: {str(e)}")
         return jsonify({'error': 'Erro interno'}), 500
+
+
+@app.route('/test/pagamento', methods=['POST'])
+def test_pagamento():
+    """Rota de teste sem verificação HMAC"""
+    try:
+        log_message("🧪 TESTE: Webhook recebido (sem verificação HMAC)")
+        payload = request.get_data()
+        
+        # Preview do payload
+        preview = payload.decode('utf-8')[:200]
+        log_message(f"📄 TESTE - Payload: {preview}{'...' if len(payload) > 200 else ''}")
+        
+        try:
+            webhook_data = json.loads(payload.decode('utf-8'))
+        except json.JSONDecodeError:
+            return jsonify({'error': 'JSON inválido'}), 400
+
+        status = webhook_data.get('status', '')
+        transaction_id = webhook_data.get('id', 'N/A')
+        amount = webhook_data.get('amount', 0)
+
+        log_message(f"💳 TESTE - Pagamento ID: {transaction_id} | Status: {status} | Valor: R$ {amount/100:.2f}")
+
+        if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
+            log_message("✅ TESTE - Pagamento aprovado - abrindo fechadura")
+            if open_ttlock(TT_LOCK_ID, OPEN_SECONDS):
+                return jsonify({'status': 'success', 'message': 'Fechadura aberta (TESTE)', 'test_mode': True}), 200
+            else:
+                return jsonify({'status': 'error', 'message': 'Falha ao abrir fechadura (TESTE)', 'test_mode': True}), 500
+        else:
+            return jsonify({'status': 'ignored', 'message': 'Pagamento não aprovado (TESTE)', 'test_mode': True}), 200
+
+    except Exception as e:
+        log_message(f"❌ TESTE - Erro interno: {str(e)}")
+        return jsonify({'error': 'Erro interno', 'test_mode': True}), 500
 
 
 @app.route('/health', methods=['GET'])

@@ -37,8 +37,8 @@ def verify_signature(payload, header_signature):
         return True
 
     if not header_signature:
-        log_message("❌ Header X-Signature não encontrado - MODO TESTE: permitindo")
-        return True  # TEMPORÁRIO: permite teste sem assinatura
+        log_message("❌ Header X-Signature não encontrado")
+        return False  # CORRIGIDO: rejeita webhook sem assinatura no modo real
 
     try:
         if header_signature.startswith('sha256='):
@@ -155,7 +155,7 @@ def home():
         'endpoints': {
             'health': '/health',
             'webhook': '/webhook/pagamento (POST only)',
-            'test': '/test/pagamento (POST only - sem HMAC)',
+            'test': '/test/pagamento (POST only - sem HMAC)' if SIMULATION_MODE else 'Desabilitado no modo real',
             'debug': '/debug/ttlock (GET - debug TTLock)'
         },
         'timestamp': datetime.now().isoformat()
@@ -206,7 +206,10 @@ def webhook_pagamento():
 
 @app.route('/test/pagamento', methods=['POST'])
 def test_pagamento():
-    """Rota de teste sem verificação HMAC"""
+    """Rota de teste sem verificação HMAC - APENAS EM SIMULAÇÃO"""
+    if not SIMULATION_MODE:
+        return jsonify({'error': 'Rota de teste desabilitada no modo real'}), 403
+    
     try:
         log_message("🧪 TESTE: Webhook recebido (sem verificação HMAC)")
         payload = request.get_data()

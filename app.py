@@ -14,7 +14,6 @@ load_dotenv()
 app = Flask(__name__)
 
 # =================== CONFIGURAÇÕES OTIMIZADAS PARA PRODUÇÃO ===================
-PAG_EMAIL = os.getenv('PAG_EMAIL', '')
 PAG_TOKEN = os.getenv('PAG_TOKEN', '')
 TT_CLIENT_ID = os.getenv('TT_CLIENT_ID', '')
 TT_CLIENT_SECRET = os.getenv('TT_CLIENT_SECRET', '')
@@ -28,7 +27,7 @@ OPEN_SECONDS = int(os.getenv('OPEN_SECONDS', '8'))
 SIMULATION_MODE = False
 
 # Validação obrigatória - FALHA SE CONFIGURAÇÕES AUSENTES
-required_configs = ['PAG_EMAIL', 'PAG_TOKEN', 'TT_CLIENT_ID', 'TT_CLIENT_SECRET', 'TT_EMAIL', 'TT_PASSWORD', 'TT_LOCK_ID']
+required_configs = ['PAG_TOKEN', 'TT_CLIENT_ID', 'TT_CLIENT_SECRET', 'TT_EMAIL', 'TT_PASSWORD', 'TT_LOCK_ID']
 missing_configs = [config for config in required_configs if not os.getenv(config)]
 if missing_configs:
     raise ValueError(f"❌ ERRO FATAL: Configurações obrigatórias ausentes: {', '.join(missing_configs)}")
@@ -281,7 +280,6 @@ def verificar_transacao_pagbank(notification_code):
     
     try:
         params = {
-            'email': PAG_EMAIL,
             'token': PAG_TOKEN
         }
         

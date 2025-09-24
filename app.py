@@ -2,7 +2,7 @@ import os
 import hmac
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 import requests
 from dotenv import load_dotenv
@@ -22,6 +22,12 @@ TT_LOCK_ID = os.getenv('TT_LOCK_ID', '')
 TT_API_BASE = os.getenv('TT_API_BASE', 'https://euapi.sciener.com')
 OPEN_SECONDS = int(os.getenv('OPEN_SECONDS', '8'))
 SIMULATION_MODE = os.getenv('SIMULATION_MODE', 'true').lower() == 'true'
+
+# Cache para token TTLock
+token_cache = {
+    'access_token': None,
+    'expires_at': None
+}
 
 
 def log_message(message):
@@ -65,10 +71,16 @@ def verify_signature(payload, header_signature):
 
 
 def get_ttlock_access_token():
-    """Obtém token de acesso da API TTLock"""
+    """Obtém token de acesso da API TTLock com cache"""
     if SIMULATION_MODE:
-        log_message("🔧 [SIMULAÇÃO] Obtendo token de acesso TTLock...")
         return "token_simulado_123"
+
+    # Verificar cache
+    now = datetime.now()
+    if (token_cache['access_token'] and 
+        token_cache['expires_at'] and 
+        now < token_cache['expires_at']):
+        return token_cache['access_token']
 
     try:
         url = f"{TT_API_BASE}/oauth2/token"
@@ -84,34 +96,35 @@ def get_ttlock_access_token():
             'password': password_md5
         }
 
-        log_message(f"🔑 Tentando autenticar com TTLock...")
-        response = requests.post(url, data=data, timeout=10)
-        
-        # Log da resposta para debug
-        log_message(f"📡 Status Code TTLock: {response.status_code}")
-        
+        # REDUZIDO: timeout de 10s para 3s
+        response = requests.post(url, data=data, timeout=3)
         response.raise_for_status()
 
         token_data = response.json()
         access_token = token_data.get('access_token')
+        expires_in = token_data.get('expires_in', 3600)
 
         if access_token:
-            log_message("✅ Token de acesso TTLock obtido com sucesso")
+            # Cache do token por 90% do tempo de vida
+            cache_time = expires_in * 0.9
+            token_cache['access_token'] = access_token
+            token_cache['expires_at'] = now + timedelta(seconds=cache_time)
+            
+            log_message("✅ Token TTLock obtido (cached)")
             return access_token
         else:
-            log_message(f"❌ Token não encontrado. Resposta: {response.text}")
+            log_message(f"❌ Token não encontrado")
             return None
 
     except requests.exceptions.RequestException as e:
-        log_message(f"❌ Erro ao obter token TTLock: {str(e)}")
+        log_message(f"❌ Erro token TTLock: {str(e)}")
         return None
 
 
 def open_ttlock(lock_id, seconds):
-    """Abre a fechadura TTLock"""
+    """Abre a fechadura TTLock - OTIMIZADA"""
     if SIMULATION_MODE:
-        log_message(f"🔧 [SIMULAÇÃO] Abrindo fechadura {lock_id} por {seconds} segundos...")
-        log_message("🔓 [SIMULAÇÃO] Fechadura aberta com sucesso!")
+        log_message(f"🔓 [SIM] Fechadura {lock_id} aberta!")
         return True
 
     try:
@@ -127,20 +140,20 @@ def open_ttlock(lock_id, seconds):
             'date': int(datetime.now().timestamp() * 1000)
         }
 
-        log_message(f"🔓 Enviando comando para abrir fechadura {lock_id}...")
-        response = requests.post(url, data=data, timeout=10)
+        # REDUZIDO: timeout de 10s para 5s
+        response = requests.post(url, data=data, timeout=5)
         response.raise_for_status()
         result = response.json()
 
         if result.get('errcode') == 0:
-            log_message(f"✅ Fechadura {lock_id} aberta com sucesso")
+            log_message(f"🔓 Fechadura {lock_id} ABERTA!")
             return True
         else:
-            log_message(f"❌ Erro TTLock: {result}")
+            log_message(f"❌ Erro TTLock: {result.get('errmsg', 'Unknown')}")
             return False
 
     except requests.exceptions.RequestException as e:
-        log_message(f"❌ Erro ao abrir fechadura: {str(e)}")
+        log_message(f"❌ Erro abertura: {str(e)}")
         return False
 
 
@@ -152,23 +165,18 @@ def home():
         'status': 'online',
         'simulation_mode': SIMULATION_MODE,
         'lock_id': TT_LOCK_ID,
-        'endpoints': {
-            'health': '/health',
-            'webhook': '/webhook/pagamento (POST only)',
-            'test': '/test/pagamento (POST only - sem HMAC)' if SIMULATION_MODE else 'Desabilitado no modo real',
-            'debug': '/debug/ttlock (GET - debug TTLock)'
-        },
+        'cache_status': 'cached' if token_cache['access_token'] else 'empty',
         'timestamp': datetime.now().isoformat()
     })
 
 
 @app.route('/webhook/pagamento', methods=['POST'])
 def webhook_pagamento():
-    """Recebe webhooks do PagBank"""
+    """Recebe webhooks do PagBank - OTIMIZADO"""
     try:
-        log_message("📥 Webhook recebido do PagBank")
+        log_message("📥 PagBank webhook")
         
-        # Verificar se é form-encoded (PagBank) ou JSON (teste manual)
+        # Verificar se é form-encoded (PagBank)
         content_type = request.headers.get('Content-Type', '')
         
         if 'application/x-www-form-urlencoded' in content_type:
@@ -176,29 +184,22 @@ def webhook_pagamento():
             notification_code = request.form.get('notificationCode')
             notification_type = request.form.get('notificationType')
             
-            log_message(f"📄 NotificationCode: {notification_code}")
-            log_message(f"📄 NotificationType: {notification_type}")
-            
             if notification_type == 'transaction' and notification_code:
-                log_message("✅ Notificação de transação PagBank recebida - abrindo fechadura")
+                log_message(f"💳 Transação: {notification_code[:20]}...")
+                log_message("🔓 ABRINDO FECHADURA...")
+                
                 if open_ttlock(TT_LOCK_ID, OPEN_SECONDS):
-                    return jsonify({'status': 'success', 'message': 'Fechadura aberta (PagBank)'}), 200
+                    return jsonify({'status': 'success'}), 200
                 else:
-                    return jsonify({'status': 'error', 'message': 'Falha ao abrir fechadura'}), 500
+                    return jsonify({'status': 'error'}), 500
             else:
-                log_message(f"⏸️ Tipo de notificação ignorado: {notification_type}")
-                return jsonify({'status': 'ignored', 'message': 'Tipo de notificação não suportado'}), 200
+                return jsonify({'status': 'ignored'}), 200
         
         else:
             # Formato JSON (testes manuais)
             payload = request.get_data()
             header_signature = request.headers.get('X-Signature', '')
             
-            # Preview do payload
-            preview = payload.decode('utf-8')[:200]
-            log_message(f"📄 Payload JSON: {preview}{'...' if len(payload) > 200 else ''}")
-            
-            # Verifica assinatura (apenas para testes manuais com JSON)
             if not verify_signature(payload, header_signature):
                 return jsonify({'error': 'Assinatura inválida'}), 401
             
@@ -208,39 +209,30 @@ def webhook_pagamento():
                 return jsonify({'error': 'JSON inválido'}), 400
             
             status = webhook_data.get('status', '')
-            transaction_id = webhook_data.get('id', 'N/A')
-            amount = webhook_data.get('amount', 0)
-            
-            log_message(f"💳 Teste Manual - Pagamento ID: {transaction_id} | Status: {status} | Valor: R$ {amount/100:.2f}")
             
             if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
-                log_message("✅ Pagamento aprovado (teste manual) - abrindo fechadura")
+                log_message("🔓 ABRINDO FECHADURA (teste)...")
                 if open_ttlock(TT_LOCK_ID, OPEN_SECONDS):
-                    return jsonify({'status': 'success', 'message': 'Fechadura aberta (teste manual)'}), 200
+                    return jsonify({'status': 'success'}), 200
                 else:
-                    return jsonify({'status': 'error', 'message': 'Falha ao abrir fechadura'}), 500
+                    return jsonify({'status': 'error'}), 500
             else:
-                log_message(f"⏸️ Pagamento não aprovado - Status: {status}")
-                return jsonify({'status': 'ignored', 'message': 'Pagamento não aprovado'}), 200
+                return jsonify({'status': 'ignored'}), 200
             
     except Exception as e:
-        log_message(f"❌ Erro interno: {str(e)}")
+        log_message(f"❌ Erro: {str(e)}")
         return jsonify({'error': 'Erro interno'}), 500
 
 
 @app.route('/test/pagamento', methods=['POST'])
 def test_pagamento():
-    """Rota de teste sem verificação HMAC - APENAS EM SIMULAÇÃO"""
+    """Rota de teste - OTIMIZADA"""
     if not SIMULATION_MODE:
         return jsonify({'error': 'Rota de teste desabilitada no modo real'}), 403
     
     try:
-        log_message("🧪 TESTE: Webhook recebido (sem verificação HMAC)")
+        log_message("🧪 Teste manual")
         payload = request.get_data()
-        
-        # Preview do payload
-        preview = payload.decode('utf-8')[:200]
-        log_message(f"📄 TESTE - Payload: {preview}{'...' if len(payload) > 200 else ''}")
         
         try:
             webhook_data = json.loads(payload.decode('utf-8'))
@@ -248,28 +240,18 @@ def test_pagamento():
             return jsonify({'error': 'JSON inválido'}), 400
 
         status = webhook_data.get('status', '')
-        transaction_id = webhook_data.get('id', 'N/A')
-        amount = webhook_data.get('amount', 0)
-
-        log_message(f"💳 TESTE - Pagamento ID: {transaction_id} | Status: {status} | Valor: R$ {amount/100:.2f}")
 
         if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
-            log_message("✅ TESTE - Pagamento aprovado - abrindo fechadura")
+            log_message("🔓 ABRINDO (teste)...")
             if open_ttlock(TT_LOCK_ID, OPEN_SECONDS):
-                return jsonify({
-                    'status': 'success', 
-                    'message': 'Fechadura aberta (TESTE)',
-                    'simulation_mode': SIMULATION_MODE,
-                    'lock_id': TT_LOCK_ID
-                }), 200
+                return jsonify({'status': 'success'}), 200
             else:
-                return jsonify({'status': 'error', 'message': 'Falha ao abrir fechadura (TESTE)'}), 500
+                return jsonify({'status': 'error'}), 500
         else:
-            log_message(f"⏸️ TESTE - Pagamento não aprovado - Status: {status}")
-            return jsonify({'status': 'ignored', 'message': 'Pagamento não aprovado (TESTE)'}), 200
+            return jsonify({'status': 'ignored'}), 200
 
     except Exception as e:
-        log_message(f"❌ TESTE - Erro interno: {str(e)}")
+        log_message(f"❌ Erro teste: {str(e)}")
         return jsonify({'error': 'Erro interno'}), 500
 
 
@@ -280,7 +262,7 @@ def debug_ttlock():
         if SIMULATION_MODE:
             return jsonify({
                 'status': 'simulation_mode',
-                'message': 'Modo simulação ativo - TTLock não será testado',
+                'message': 'Modo simulação ativo',
                 'simulation_mode': True,
                 'lock_id': TT_LOCK_ID
             })
@@ -296,15 +278,12 @@ def debug_ttlock():
             'password': password_md5
         }
         
-        response = requests.post(url, data=data, timeout=10)
+        response = requests.post(url, data=data, timeout=3)
         
         return jsonify({
-            'url': url,
             'status_code': response.status_code,
             'response': response.text,
-            'email': TT_EMAIL,
-            'client_id': TT_CLIENT_ID[:8] + '...',  # Parcial por segurança
-            'lock_id': TT_LOCK_ID,
+            'cache_status': 'cached' if token_cache['access_token'] else 'empty',
             'simulation_mode': SIMULATION_MODE
         })
         
@@ -318,13 +297,13 @@ def health():
         'status': 'ok',
         'simulation_mode': SIMULATION_MODE,
         'lock_id': TT_LOCK_ID,
+        'cache_status': 'cached' if token_cache['access_token'] else 'empty',
         'timestamp': datetime.now().isoformat()
     })
 
 
 if __name__ == '__main__':
-    log_message("🚀 Iniciando sistema PagBank + TTLock")
-    log_message(f"🔧 Modo simulação: {'ATIVO' if SIMULATION_MODE else 'DESATIVO'}")
-    log_message(f"🔒 Lock ID: {TT_LOCK_ID}")
+    log_message("🚀 Sistema PagBank + TTLock OTIMIZADO")
+    log_message(f"🔧 Modo: {'SIMULAÇÃO' if SIMULATION_MODE else 'REAL'}")
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)

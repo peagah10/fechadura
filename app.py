@@ -19,7 +19,7 @@ TT_CLIENT_SECRET = os.getenv('TT_CLIENT_SECRET', '')
 TT_EMAIL = os.getenv('TT_EMAIL', '')
 TT_PASSWORD = os.getenv('TT_PASSWORD', '')
 TT_LOCK_ID = os.getenv('TT_LOCK_ID', '')
-TT_API_BASE = os.getenv('TT_API_BASE', 'https://api.ttlock.com')
+TT_API_BASE = os.getenv('TT_API_BASE', 'https://euapi.sciener.com')
 OPEN_SECONDS = int(os.getenv('OPEN_SECONDS', '8'))
 SIMULATION_MODE = os.getenv('SIMULATION_MODE', 'true').lower() == 'true'
 
@@ -38,7 +38,7 @@ def verify_signature(payload, header_signature):
 
     if not header_signature:
         log_message("❌ Header X-Signature não encontrado")
-        return False  # CORRIGIDO: rejeita webhook sem assinatura no modo real
+        return False
 
     try:
         if header_signature.startswith('sha256='):
@@ -167,38 +167,62 @@ def webhook_pagamento():
     """Recebe webhooks do PagBank"""
     try:
         log_message("📥 Webhook recebido do PagBank")
-        payload = request.get_data()
-        header_signature = request.headers.get('X-Signature', '')
-
-        # Preview do payload
-        preview = payload.decode('utf-8')[:200]
-        log_message(f"📄 Payload: {preview}{'...' if len(payload) > 200 else ''}")
-
-        # Verifica assinatura
-        if not verify_signature(payload, header_signature):
-            return jsonify({'error': 'Assinatura inválida'}), 401
-
-        try:
-            webhook_data = json.loads(payload.decode('utf-8'))
-        except json.JSONDecodeError:
-            return jsonify({'error': 'JSON inválido'}), 400
-
-        status = webhook_data.get('status', '')
-        transaction_id = webhook_data.get('id', 'N/A')
-        amount = webhook_data.get('amount', 0)
-
-        log_message(f"💳 Pagamento ID: {transaction_id} | Status: {status} | Valor: R$ {amount/100:.2f}")
-
-        if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
-            log_message("✅ Pagamento aprovado - abrindo fechadura")
-            if open_ttlock(TT_LOCK_ID, OPEN_SECONDS):
-                return jsonify({'status': 'success', 'message': 'Fechadura aberta'}), 200
+        
+        # Verificar se é form-encoded (PagBank) ou JSON (teste manual)
+        content_type = request.headers.get('Content-Type', '')
+        
+        if 'application/x-www-form-urlencoded' in content_type:
+            # Formato PagBank (form-encoded)
+            notification_code = request.form.get('notificationCode')
+            notification_type = request.form.get('notificationType')
+            
+            log_message(f"📄 NotificationCode: {notification_code}")
+            log_message(f"📄 NotificationType: {notification_type}")
+            
+            if notification_type == 'transaction' and notification_code:
+                log_message("✅ Notificação de transação PagBank recebida - abrindo fechadura")
+                if open_ttlock(TT_LOCK_ID, OPEN_SECONDS):
+                    return jsonify({'status': 'success', 'message': 'Fechadura aberta (PagBank)'}), 200
+                else:
+                    return jsonify({'status': 'error', 'message': 'Falha ao abrir fechadura'}), 500
             else:
-                return jsonify({'status': 'error', 'message': 'Falha ao abrir fechadura'}), 500
+                log_message(f"⏸️ Tipo de notificação ignorado: {notification_type}")
+                return jsonify({'status': 'ignored', 'message': 'Tipo de notificação não suportado'}), 200
+        
         else:
-            log_message(f"⏸️ Pagamento não aprovado - Status: {status}")
-            return jsonify({'status': 'ignored', 'message': 'Pagamento não aprovado'}), 200
-
+            # Formato JSON (testes manuais)
+            payload = request.get_data()
+            header_signature = request.headers.get('X-Signature', '')
+            
+            # Preview do payload
+            preview = payload.decode('utf-8')[:200]
+            log_message(f"📄 Payload JSON: {preview}{'...' if len(payload) > 200 else ''}")
+            
+            # Verifica assinatura (apenas para testes manuais com JSON)
+            if not verify_signature(payload, header_signature):
+                return jsonify({'error': 'Assinatura inválida'}), 401
+            
+            try:
+                webhook_data = json.loads(payload.decode('utf-8'))
+            except json.JSONDecodeError:
+                return jsonify({'error': 'JSON inválido'}), 400
+            
+            status = webhook_data.get('status', '')
+            transaction_id = webhook_data.get('id', 'N/A')
+            amount = webhook_data.get('amount', 0)
+            
+            log_message(f"💳 Teste Manual - Pagamento ID: {transaction_id} | Status: {status} | Valor: R$ {amount/100:.2f}")
+            
+            if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
+                log_message("✅ Pagamento aprovado (teste manual) - abrindo fechadura")
+                if open_ttlock(TT_LOCK_ID, OPEN_SECONDS):
+                    return jsonify({'status': 'success', 'message': 'Fechadura aberta (teste manual)'}), 200
+                else:
+                    return jsonify({'status': 'error', 'message': 'Falha ao abrir fechadura'}), 500
+            else:
+                log_message(f"⏸️ Pagamento não aprovado - Status: {status}")
+                return jsonify({'status': 'ignored', 'message': 'Pagamento não aprovado'}), 200
+            
     except Exception as e:
         log_message(f"❌ Erro interno: {str(e)}")
         return jsonify({'error': 'Erro interno'}), 500

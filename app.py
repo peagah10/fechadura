@@ -38,7 +38,7 @@ def log_message(message):
 
 
 def get_ttlock_access_token():
-    """Token TTLock ULTRA RÁPIDO"""
+    """Token TTLock com timeout otimizado para Render"""
     if SIMULATION_MODE:
         return "token_simulado_123"
 
@@ -61,8 +61,8 @@ def get_ttlock_access_token():
             'password': password_md5
         }
 
-        # ULTRA RÁPIDO: timeout 1 segundo!
-        response = requests.post(url, data=data, timeout=1)
+        # TIMEOUT OTIMIZADO PARA RENDER: 3 segundos
+        response = requests.post(url, data=data, timeout=3)
         response.raise_for_status()
 
         token_data = response.json()
@@ -70,20 +70,25 @@ def get_ttlock_access_token():
         expires_in = token_data.get('expires_in', 3600)
 
         if access_token:
-            # Cache por 95% do tempo
-            cache_time = expires_in * 0.95
+            # Cache por 90% do tempo
+            cache_time = expires_in * 0.9
             token_cache['access_token'] = access_token
             token_cache['expires_at'] = now + timedelta(seconds=cache_time)
+            log_message("✅ Token OK")
             return access_token
         
         return None
 
-    except:
+    except requests.exceptions.Timeout:
+        log_message("❌ Timeout token (3s)")
+        return None
+    except Exception as e:
+        log_message(f"❌ Token: {str(e)[:30]}")
         return None
 
 
 def open_ttlock_fast(lock_id):
-    """Abertura ULTRA RÁPIDA"""
+    """Abertura rápida com melhor tratamento de erro"""
     if SIMULATION_MODE:
         log_message("🔓 [SIM] ABERTA!")
         return True
@@ -91,6 +96,7 @@ def open_ttlock_fast(lock_id):
     try:
         access_token = get_ttlock_access_token()
         if not access_token:
+            log_message("❌ Sem token")
             return False
 
         url = f"{TT_API_BASE}/v3/lock/unlock"
@@ -101,26 +107,39 @@ def open_ttlock_fast(lock_id):
             'date': int(datetime.now().timestamp() * 1000)
         }
 
-        # ULTRA RÁPIDO: timeout 1.5 segundos!
-        response = requests.post(url, data=data, timeout=1.5)
+        # TIMEOUT OTIMIZADO PARA RENDER: 4 segundos
+        response = requests.post(url, data=data, timeout=4)
+        response.raise_for_status()
         result = response.json()
 
         if result.get('errcode') == 0:
-            log_message("🔓 ABERTA!")
+            log_message("🔓 FECHADURA ABERTA!")
             return True
         else:
-            log_message(f"❌ {result.get('errmsg', 'Erro')}")
+            error_msg = result.get('errmsg', 'Erro desconhecido')
+            log_message(f"❌ TTLock: {error_msg}")
             return False
 
+    except requests.exceptions.Timeout:
+        log_message("❌ Timeout abertura (4s)")
+        return False
+    except requests.exceptions.ConnectionError:
+        log_message("❌ Conexão falhou")
+        return False
     except Exception as e:
-        log_message(f"❌ {str(e)[:50]}")
+        log_message(f"❌ Erro: {str(e)[:30]}")
         return False
 
 
 def open_lock_async(lock_id):
-    """Abre fechadura em thread separada - NÃO BLOQUEIA"""
+    """Abertura assíncrona com logs detalhados"""
     def run():
-        open_ttlock_fast(lock_id)
+        log_message("🔓 Iniciando abertura...")
+        success = open_ttlock_fast(lock_id)
+        if success:
+            log_message("✅ Fechadura aberta com sucesso!")
+        else:
+            log_message("❌ Falha na abertura")
     
     thread = threading.Thread(target=run)
     thread.daemon = True
@@ -131,17 +150,18 @@ def open_lock_async(lock_id):
 def home():
     """Rota principal"""
     return jsonify({
-        'message': 'Sistema ULTRA RÁPIDO!',
+        'message': 'Sistema PagBank + TTLock OTIMIZADO',
         'status': 'online',
         'simulation_mode': SIMULATION_MODE,
         'lock_id': TT_LOCK_ID,
-        'cache': 'cached' if token_cache['access_token'] else 'empty'
+        'cache_status': 'cached' if token_cache['access_token'] else 'empty',
+        'timestamp': datetime.now().isoformat()
     })
 
 
 @app.route('/webhook/pagamento', methods=['POST'])
 def webhook_pagamento():
-    """Webhook ULTRA RÁPIDO - não espera TTLock"""
+    """Webhook otimizado para Render"""
     try:
         log_message("📥 PagBank")
         
@@ -151,15 +171,19 @@ def webhook_pagamento():
             notification_code = request.form.get('notificationCode')
             notification_type = request.form.get('notificationType')
             
+            log_message(f"📄 Code: {notification_code[:15] if notification_code else 'None'}...")
+            log_message(f"📄 Type: {notification_type}")
+            
             if notification_type == 'transaction' and notification_code:
-                log_message("💳 APROVADO")
+                log_message("💳 PAGAMENTO APROVADO!")
                 
-                # ABERTURA ASSÍNCRONA - NÃO ESPERA!
+                # ABERTURA ASSÍNCRONA
                 open_lock_async(TT_LOCK_ID)
                 
                 # RESPOSTA IMEDIATA
-                return jsonify({'status': 'success'}), 200
+                return jsonify({'status': 'success', 'message': 'Processing'}), 200
             else:
+                log_message("⏸️ Ignorado")
                 return jsonify({'status': 'ignored'}), 200
         
         else:
@@ -170,25 +194,23 @@ def webhook_pagamento():
                 return jsonify({'error': 'JSON inválido'}), 400
             
             status = webhook_data.get('status', '')
+            log_message(f"📄 JSON Status: {status}")
             
             if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
-                log_message("💳 TESTE APROVADO")
-                
-                # ABERTURA ASSÍNCRONA
+                log_message("💳 TESTE APROVADO!")
                 open_lock_async(TT_LOCK_ID)
-                
                 return jsonify({'status': 'success'}), 200
             else:
                 return jsonify({'status': 'ignored'}), 200
             
     except Exception as e:
-        log_message(f"❌ {str(e)[:50]}")
-        return jsonify({'error': 'Erro'}), 500
+        log_message(f"❌ Webhook erro: {str(e)[:50]}")
+        return jsonify({'error': 'Erro interno'}), 500
 
 
 @app.route('/test/pagamento', methods=['POST'])
 def test_pagamento():
-    """Teste ULTRA RÁPIDO"""
+    """Teste manual"""
     if not SIMULATION_MODE:
         return jsonify({'error': 'Desabilitado no modo real'}), 403
     
@@ -197,7 +219,7 @@ def test_pagamento():
         status = webhook_data.get('status', '')
 
         if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
-            log_message("🧪 TESTE")
+            log_message("🧪 TESTE MANUAL")
             open_lock_async(TT_LOCK_ID)
             return jsonify({'status': 'success'}), 200
         else:
@@ -207,53 +229,66 @@ def test_pagamento():
         return jsonify({'error': 'Erro'}), 500
 
 
-@app.route('/warm-cache', methods=['GET'])
-def warm_cache():
-    """Pré-aquece o cache do token"""
-    token = get_ttlock_access_token()
-    return jsonify({
-        'cache_warmed': bool(token),
-        'cached': bool(token_cache['access_token'])
-    })
-
-
 @app.route('/open-now', methods=['POST'])
 def open_now():
-    """Abertura manual IMEDIATA"""
-    log_message("🔓 ABERTURA MANUAL")
+    """Abertura manual para teste"""
+    log_message("🔓 ABERTURA MANUAL SOLICITADA")
     open_lock_async(TT_LOCK_ID)
-    return jsonify({'status': 'opening'}), 200
+    return jsonify({'status': 'opening', 'message': 'Comando enviado'}), 200
 
 
-@app.route('/debug/ttlock', methods=['GET'])
-def debug_ttlock():
-    """Debug TTLock"""
-    if SIMULATION_MODE:
-        return jsonify({'status': 'simulation_mode'})
+@app.route('/test-connection', methods=['GET'])
+def test_connection():
+    """Testar conexão TTLock"""
+    log_message("🧪 Testando conexão TTLock...")
     
-    token = get_ttlock_access_token()
-    return jsonify({
-        'token_obtained': bool(token),
-        'cached': bool(token_cache['access_token'])
-    })
+    if SIMULATION_MODE:
+        return jsonify({'status': 'simulation', 'message': 'Modo simulação ativo'})
+    
+    try:
+        # Teste simples de conectividade
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        result = sock.connect_ex(('euapi.sciener.com', 443))
+        sock.close()
+        
+        if result == 0:
+            token = get_ttlock_access_token()
+            return jsonify({
+                'connection': 'OK',
+                'token_obtained': bool(token),
+                'cached': bool(token_cache['access_token'])
+            })
+        else:
+            return jsonify({'connection': 'FAILED', 'error': f'Socket error: {result}'})
+            
+    except Exception as e:
+        return jsonify({'connection': 'ERROR', 'error': str(e)})
 
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
         'status': 'ok',
-        'mode': 'SIM' if SIMULATION_MODE else 'REAL',
-        'cache': bool(token_cache['access_token'])
+        'mode': 'SIMULAÇÃO' if SIMULATION_MODE else 'REAL',
+        'cache': bool(token_cache['access_token']),
+        'timestamp': datetime.now().isoformat()
     })
 
 
 if __name__ == '__main__':
-    log_message("🚀 SISTEMA ULTRA RÁPIDO")
+    log_message("🚀 Sistema PagBank + TTLock - OTIMIZADO RENDER")
+    log_message(f"🔧 Modo: {'SIMULAÇÃO' if SIMULATION_MODE else 'REAL'}")
     
-    # Pré-aquecer cache na inicialização
+    # Pré-aquecer cache se não estiver em simulação
     if not SIMULATION_MODE:
         log_message("🔥 Pré-aquecendo cache...")
-        get_ttlock_access_token()
+        token = get_ttlock_access_token()
+        if token:
+            log_message("✅ Cache aquecido com sucesso")
+        else:
+            log_message("❌ Falha ao aquecer cache")
     
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.getenv('PORT', 10000))  # Porta padrão do Render
     app.run(host='0.0.0.0', port=port, debug=False)

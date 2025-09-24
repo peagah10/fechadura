@@ -15,6 +15,7 @@ app = Flask(__name__)
 
 # Configurações
 PAG_WEBHOOK_SECRET = os.getenv('PAG_WEBHOOK_SECRET', '')
+PAG_TOKEN = os.getenv('PAG_TOKEN', '')  # Token do PagBank
 TT_CLIENT_ID = os.getenv('TT_CLIENT_ID', '')
 TT_CLIENT_SECRET = os.getenv('TT_CLIENT_SECRET', '')
 TT_EMAIL = os.getenv('TT_EMAIL', '')
@@ -32,13 +33,63 @@ token_cache = {
 
 
 def log_message(message):
-    """Log rápido"""
+    """Log com timestamp"""
     timestamp = datetime.now().strftime('%H:%M:%S')
     print(f"[{timestamp}] {message}")
 
 
+def verify_payment_with_pagbank(notification_code):
+    """VERIFICA SE PAGAMENTO FOI REALMENTE APROVADO"""
+    if SIMULATION_MODE:
+        log_message("🔧 [SIM] Pagamento aprovado (simulação)")
+        return True
+    
+    if not PAG_TOKEN:
+        log_message("❌ PAG_TOKEN não configurado")
+        return False
+    
+    try:
+        # API do PagBank para consultar transação
+        url = f"https://api.pagseguro.com/notifications/{notification_code}"
+        headers = {
+            'Authorization': f'Bearer {PAG_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        
+        log_message(f"🔍 Consultando pagamento: {notification_code[:15]}...")
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        response.raise_for_status()
+        
+        payment_data = response.json()
+        
+        # Verificar status do pagamento
+        status = payment_data.get('status', '').lower()
+        amount = payment_data.get('amount', 0)
+        payment_id = payment_data.get('id', 'N/A')
+        
+        log_message(f"💳 ID: {payment_id} | Status: {status} | Valor: R$ {amount/100:.2f}")
+        
+        # SÓ APROVADOS
+        approved_statuses = ['paid', 'approved', 'autorizado', 'capturado', 'available']
+        
+        if status in approved_statuses:
+            log_message(f"✅ PAGAMENTO CONFIRMADO: {status.upper()}")
+            return True
+        else:
+            log_message(f"❌ PAGAMENTO NÃO APROVADO: {status.upper()}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        log_message(f"❌ Erro ao consultar PagBank: {str(e)}")
+        return False
+    except Exception as e:
+        log_message(f"❌ Erro verificação: {str(e)}")
+        return False
+
+
 def get_ttlock_access_token():
-    """Token TTLock com timeout otimizado para Render"""
+    """Token TTLock com cache"""
     if SIMULATION_MODE:
         return "token_simulado_123"
 
@@ -61,7 +112,6 @@ def get_ttlock_access_token():
             'password': password_md5
         }
 
-        # TIMEOUT OTIMIZADO PARA RENDER: 3 segundos
         response = requests.post(url, data=data, timeout=3)
         response.raise_for_status()
 
@@ -70,33 +120,28 @@ def get_ttlock_access_token():
         expires_in = token_data.get('expires_in', 3600)
 
         if access_token:
-            # Cache por 90% do tempo
             cache_time = expires_in * 0.9
             token_cache['access_token'] = access_token
             token_cache['expires_at'] = now + timedelta(seconds=cache_time)
-            log_message("✅ Token OK")
             return access_token
         
         return None
 
-    except requests.exceptions.Timeout:
-        log_message("❌ Timeout token (3s)")
-        return None
     except Exception as e:
-        log_message(f"❌ Token: {str(e)[:30]}")
+        log_message(f"❌ Token TTLock: {str(e)[:30]}")
         return None
 
 
-def open_ttlock_fast(lock_id):
-    """Abertura rápida com melhor tratamento de erro"""
+def open_ttlock_secure(lock_id):
+    """Abertura SEGURA da fechadura"""
     if SIMULATION_MODE:
-        log_message("🔓 [SIM] ABERTA!")
+        log_message("🔓 [SIM] Fechadura aberta!")
         return True
 
     try:
         access_token = get_ttlock_access_token()
         if not access_token:
-            log_message("❌ Sem token")
+            log_message("❌ Sem token TTLock")
             return False
 
         url = f"{TT_API_BASE}/v3/lock/unlock"
@@ -107,39 +152,41 @@ def open_ttlock_fast(lock_id):
             'date': int(datetime.now().timestamp() * 1000)
         }
 
-        # TIMEOUT OTIMIZADO PARA RENDER: 4 segundos
         response = requests.post(url, data=data, timeout=4)
         response.raise_for_status()
         result = response.json()
 
         if result.get('errcode') == 0:
-            log_message("🔓 FECHADURA ABERTA!")
+            log_message("🔓 FECHADURA ABERTA COM SEGURANÇA!")
             return True
         else:
             error_msg = result.get('errmsg', 'Erro desconhecido')
             log_message(f"❌ TTLock: {error_msg}")
             return False
 
-    except requests.exceptions.Timeout:
-        log_message("❌ Timeout abertura (4s)")
-        return False
-    except requests.exceptions.ConnectionError:
-        log_message("❌ Conexão falhou")
-        return False
     except Exception as e:
-        log_message(f"❌ Erro: {str(e)[:30]}")
+        log_message(f"❌ Erro abertura: {str(e)[:30]}")
         return False
 
 
-def open_lock_async(lock_id):
-    """Abertura assíncrona com logs detalhados"""
+def process_payment_securely(notification_code):
+    """Processa pagamento com VERIFICAÇÃO DE SEGURANÇA"""
     def run():
-        log_message("🔓 Iniciando abertura...")
-        success = open_ttlock_fast(lock_id)
-        if success:
-            log_message("✅ Fechadura aberta com sucesso!")
+        log_message("🔒 VERIFICANDO PAGAMENTO...")
+        
+        # ETAPA 1: Verificar se pagamento foi aprovado
+        if verify_payment_with_pagbank(notification_code):
+            log_message("🔓 Abrindo fechadura (pagamento confirmado)...")
+            
+            # ETAPA 2: Só agora abrir fechadura
+            success = open_ttlock_secure(TT_LOCK_ID)
+            
+            if success:
+                log_message("✅ PROCESSO COMPLETO: Pagamento + Abertura")
+            else:
+                log_message("❌ Pagamento OK, mas falha na abertura")
         else:
-            log_message("❌ Falha na abertura")
+            log_message("🚫 FECHADURA NÃO ABERTA: Pagamento não confirmado")
     
     thread = threading.Thread(target=run)
     thread.daemon = True
@@ -150,20 +197,20 @@ def open_lock_async(lock_id):
 def home():
     """Rota principal"""
     return jsonify({
-        'message': 'Sistema PagBank + TTLock OTIMIZADO',
+        'message': 'Sistema PagBank + TTLock SEGURO',
         'status': 'online',
         'simulation_mode': SIMULATION_MODE,
+        'security': 'Só abre com pagamento confirmado',
         'lock_id': TT_LOCK_ID,
-        'cache_status': 'cached' if token_cache['access_token'] else 'empty',
         'timestamp': datetime.now().isoformat()
     })
 
 
 @app.route('/webhook/pagamento', methods=['POST'])
 def webhook_pagamento():
-    """Webhook otimizado para Render"""
+    """Webhook SEGURO - verifica pagamento antes de abrir"""
     try:
-        log_message("📥 PagBank")
+        log_message("📥 Webhook PagBank recebido")
         
         content_type = request.headers.get('Content-Type', '')
         
@@ -171,57 +218,62 @@ def webhook_pagamento():
             notification_code = request.form.get('notificationCode')
             notification_type = request.form.get('notificationType')
             
-            log_message(f"📄 Code: {notification_code[:15] if notification_code else 'None'}...")
             log_message(f"📄 Type: {notification_type}")
+            log_message(f"📄 Code: {notification_code[:20] if notification_code else 'None'}...")
             
             if notification_type == 'transaction' and notification_code:
-                log_message("💳 PAGAMENTO APROVADO!")
+                log_message("🔒 INICIANDO VERIFICAÇÃO SEGURA...")
                 
-                # ABERTURA ASSÍNCRONA
-                open_lock_async(TT_LOCK_ID)
+                # PROCESSAMENTO SEGURO
+                process_payment_securely(notification_code)
                 
-                # RESPOSTA IMEDIATA
-                return jsonify({'status': 'success', 'message': 'Processing'}), 200
+                # Resposta imediata
+                return jsonify({
+                    'status': 'received', 
+                    'message': 'Verificando pagamento...'
+                }), 200
             else:
-                log_message("⏸️ Ignorado")
+                log_message("⏸️ Notificação ignorada")
                 return jsonify({'status': 'ignored'}), 200
         
         else:
-            # Testes manuais JSON
+            # Testes manuais JSON (só em simulação)
+            if not SIMULATION_MODE:
+                return jsonify({'error': 'Formato não suportado em produção'}), 400
+                
             try:
                 webhook_data = json.loads(request.get_data().decode('utf-8'))
             except:
                 return jsonify({'error': 'JSON inválido'}), 400
             
             status = webhook_data.get('status', '')
-            log_message(f"📄 JSON Status: {status}")
             
             if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
-                log_message("💳 TESTE APROVADO!")
-                open_lock_async(TT_LOCK_ID)
+                log_message("🧪 TESTE: Simulando pagamento aprovado")
+                process_payment_securely('TEST_CODE')
                 return jsonify({'status': 'success'}), 200
             else:
                 return jsonify({'status': 'ignored'}), 200
             
     except Exception as e:
-        log_message(f"❌ Webhook erro: {str(e)[:50]}")
+        log_message(f"❌ Erro webhook: {str(e)[:50]}")
         return jsonify({'error': 'Erro interno'}), 500
 
 
 @app.route('/test/pagamento', methods=['POST'])
 def test_pagamento():
-    """Teste manual"""
+    """Teste manual SEGURO"""
     if not SIMULATION_MODE:
-        return jsonify({'error': 'Desabilitado no modo real'}), 403
+        return jsonify({'error': 'Testes desabilitados em produção'}), 403
     
     try:
         webhook_data = json.loads(request.get_data().decode('utf-8'))
         status = webhook_data.get('status', '')
 
         if status.lower() in ['paid', 'approved', 'autorizado', 'capturado']:
-            log_message("🧪 TESTE MANUAL")
-            open_lock_async(TT_LOCK_ID)
-            return jsonify({'status': 'success'}), 200
+            log_message("🧪 TESTE MANUAL SEGURO")
+            process_payment_securely('MANUAL_TEST')
+            return jsonify({'status': 'testing'}), 200
         else:
             return jsonify({'status': 'ignored'}), 200
 
@@ -229,66 +281,20 @@ def test_pagamento():
         return jsonify({'error': 'Erro'}), 500
 
 
-@app.route('/open-now', methods=['POST'])
-def open_now():
-    """Abertura manual para teste"""
-    log_message("🔓 ABERTURA MANUAL SOLICITADA")
-    open_lock_async(TT_LOCK_ID)
-    return jsonify({'status': 'opening', 'message': 'Comando enviado'}), 200
-
-
-@app.route('/test-connection', methods=['GET'])
-def test_connection():
-    """Testar conexão TTLock"""
-    log_message("🧪 Testando conexão TTLock...")
-    
-    if SIMULATION_MODE:
-        return jsonify({'status': 'simulation', 'message': 'Modo simulação ativo'})
-    
-    try:
-        # Teste simples de conectividade
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(3)
-        result = sock.connect_ex(('euapi.sciener.com', 443))
-        sock.close()
-        
-        if result == 0:
-            token = get_ttlock_access_token()
-            return jsonify({
-                'connection': 'OK',
-                'token_obtained': bool(token),
-                'cached': bool(token_cache['access_token'])
-            })
-        else:
-            return jsonify({'connection': 'FAILED', 'error': f'Socket error: {result}'})
-            
-    except Exception as e:
-        return jsonify({'connection': 'ERROR', 'error': str(e)})
-
-
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
         'status': 'ok',
-        'mode': 'SIMULAÇÃO' if SIMULATION_MODE else 'REAL',
-        'cache': bool(token_cache['access_token']),
+        'mode': 'SIMULAÇÃO' if SIMULATION_MODE else 'PRODUÇÃO SEGURA',
+        'security': 'Verificação de pagamento ativa',
         'timestamp': datetime.now().isoformat()
     })
 
 
 if __name__ == '__main__':
-    log_message("🚀 Sistema PagBank + TTLock - OTIMIZADO RENDER")
-    log_message(f"🔧 Modo: {'SIMULAÇÃO' if SIMULATION_MODE else 'REAL'}")
+    log_message("🚀 Sistema SEGURO PagBank + TTLock")
+    log_message("🔒 SEGURANÇA: Só abre com pagamento confirmado")
+    log_message(f"🔧 Modo: {'SIMULAÇÃO' if SIMULATION_MODE else 'PRODUÇÃO'}")
     
-    # Pré-aquecer cache se não estiver em simulação
-    if not SIMULATION_MODE:
-        log_message("🔥 Pré-aquecendo cache...")
-        token = get_ttlock_access_token()
-        if token:
-            log_message("✅ Cache aquecido com sucesso")
-        else:
-            log_message("❌ Falha ao aquecer cache")
-    
-    port = int(os.getenv('PORT', 10000))  # Porta padrão do Render
+    port = int(os.getenv('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
